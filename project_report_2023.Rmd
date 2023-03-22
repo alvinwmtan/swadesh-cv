@@ -1,0 +1,412 @@
+---
+title: "Construction and cross-validation of a Swadesh-style vocabulary word list"
+subtitle: "Alvin W.M. Tan"
+date: "`r Sys.time()`"
+urlcolor: blue # to show hyperlinks in blue when printed as pdf
+
+# uncomment below to render to html
+# output:
+#   bookdown::html_document2:
+#     toc: true
+#     toc_depth: 4
+#     theme: cosmo
+#     highlight: tango
+    
+# uncomment below to render to pdf
+output:
+  bookdown::pdf_book:
+    toc: true
+    toc_depth: 4
+    highlight: tango
+    
+bibliography: [references/packages.bib, references/references.bib]
+biblio-style: apalike
+nocite: '@*'
+---
+
+```{r setup, echo=FALSE, message=FALSE}
+library(knitr)
+library(tidyverse)
+library(glue)
+library(here)
+library(ggpubr)
+library(patchwork)
+
+library(lme4)
+library(lmerTest)
+library(broom)
+library(broom.mixed)
+
+set.seed(42)
+
+options(dplyr.summarise.inform = FALSE)
+
+# these options here change the formatting of how comments are rendered
+opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  comment = "",
+  results = "hold",
+  fig.show = "hold")
+
+# set the default ggplot theme 
+theme_set(theme_classic())
+
+# include references for used packages
+write_bib(.packages(), "references/packages.bib") 
+```
+
+```{r lang-setup}
+languages <- list.files("data/all_forms") |> str_sub(end = -10)
+gen_langs <- c("Finnish",
+               "Kigiriama",
+               "American Sign Language",
+               "Greek (Cypriot)",
+               "Spanish (Peruvian)",
+               "British Sign Language",
+               "Persian",
+               "Kiswahili",
+               "English (Irish)",
+               "Irish",
+               "Spanish (Chilean)")
+train_langs <- setdiff(languages, gen_langs)
+```
+
+# Introduction
+
+Methods for measuring children's early language abilities are crucial for language acquisition research, as well as assessment of language development and diagnosis of developmental delays. 
+One such tool is the MacArthur--Bates Communicative Development Inventories [CDIs, @fensonMacArthurBatesCommunicativeDevelopment2007], which are parent-report checklists probing children's comprehension and production of various words.
+The CDIs are cost-efficient and simple to administer, and have been demonstrated to be reliable and valid measures of children's vocabulary sizes [@fensonMacArthurBatesCommunicativeDevelopment2007; @mayorStatisticalEstimateInfant2011].
+As a result, they have been widely adopted and adapted into dozens of language, and some such data have been uploaded onto an open repository of CDI data, Wordbank [@frankWordbankOpenRepository2017], which now contains data from 38 languages.
+
+Nonetheless, adapting CDIs to new languages is a challenging task. 
+The guidelines from the CDI Advisory Board suggest that new forms should not simply be direct translations of existing forms, because items may not necessarily be cross-applicable in new contexts: for example, they may not be as frequent, or may be grammatical items that do not occur in a different language.
+Therefore, researchers are encouraged to _adapt_ the CDIs, choosing context-appropriate items that are meaningfully present in young infants' early experience. 
+This requires local informants that have contextual and cultural knowledge, and a good amount of piloting and item validation to ensure appropriateness, which amount to substantial resource cost for new form development.
+
+In a recent manuscript, @kachergisMeasuringChildrenEarlysubmitted proposed a method for generating a subset of CDI items which have relatively good cross-linguistic metrics, enabling them to be utilised in new form development.
+Their procedure involved finding concepts which had relatively high coverage (across existing CDI forms) as well as relatively low variability in item difficulty; these so-called "Swadesh" sublists demonstrated good correlations with full CDI sumscores, and also generalised well to new test languages.
+
+However, there are two key limitations of the previous work.
+First, there is a missing linking hypothesis between exhibiting low difficulty variability in _training_ languages and having meaningful difficulty estimates for _test_ languages (noting that the prior work only established correlations with full sumscores).
+Note that this is not _a priori_ true: it is possible that items with low variability in some subset of languages do not generalise well in difficulty to new languages (e.g., if the contexts are sufficiently different), and only correlate well with full sumscores _in the aggregate_.
+This relationship is not testable in the framework from @kachergisMeasuringChildrenEarlysubmitted, since difficulty estimates could not be retrieved for their test languages (due to insufficient data for model fitting), and an alternative evaluation setup is required.
+
+Second, @kachergisMeasuringChildrenEarlysubmitted only used data from the Words & Sentences CDI forms, which limited the number of usable languages, since some languages do not have such a form on Wordbank. 
+This also constrained the age range of included participants, since the Words & Sentences form is not appropriate for younger infants (who would fill in a Words & Gestures or equivalent form instead).
+Using a larger dataset would improve coverage and generalisability, and also improve the precision of estimates from this modelling framework.
+
+## Research question and hypothesis
+
+In light of previous work, the present project aims to investigate whether Swadesh sublists, which contain unilemmas that exhibit lower variability in item difficulty, exhibit higher correlations with their translation equivalents in a held-out test language than random sublists, via a cross-validation framework.
+We hypothesise that this is in fact the case, positing that unilemmas with low difficulty variability may reflect elements of early childhood experience that are relevant and consistent across cultures---and therefore likely to generalise well to new cultures.
+
+# Methods
+
+## Data
+
+```{r data-stitching, eval=F}
+source(here("scripts", "stitching.R"))
+```
+
+We used data from Wordbank [@frankWordbankOpenRepository2017], accessed via the R package `wordbankr` [@braginskyWordbankrAccessingWordbank2022].
+For the present project, we made use of all the data in all forms across all languages that had data from at least 300 children, amounting to 27 languages; this threshold was used to ensure sufficient data for the IRT models to converge.
+In order to do so, we stitched the data from different forms within one language by matching items across forms based on a combination of automated and manual matching using the item definitions. 
+This resulted in a list of unified items for each language, with three possible response values: one (if the child produced the word), zero (if the child did not produce the word), or NA (if there was no valid response, or if the item was not present on the form filled in by the child's parent).
+We then excluded items and participants that had all-one or all-zero values, as the parameter values for these items and participants are not estimatable by IRT models.
+After exclusions, the total number of participants was 87137.
+
+## Unilemmas
+
+In order to match items across languages, we relied on "universal lemmas" or "unilemmas", which are approximate conceptual translations of items. 
+For example, "dog" (<span style="font-variant:small-caps;">eng</span>) and "perro" (<span style="font-variant:small-caps;">spa</span>) map to the same unilemma, _<span style="font-variant:small-caps;">dog</span>_. 
+These unilemmas were constructed on the basis of glosses provided by the original contributors of the Wordbank datasets, then verified by native or advanced proficient speakers of the language, and tidied to improve consistency across languages.
+There were a total of 1901 unilemmas across all languages.
+
+## Modelling
+
+```{r modelling, eval=F}
+source(here("scripts", "modelling.R"))
+```
+
+For each language separately, we fit two-parameter logistic (2PL) IRT models, which have been justified for CDI data in comparison with other standard models [@kachergisOnlineComputerizedAdaptive2022].
+2PL models jointly fit a latent ability parameter (in this case, language ability) for each participant, as well as a difficulty parameter and a discrimination parameter for each item.
+Children with greater latent ability are more likely to produce any given item than children with lower latent ability.
+Items with greater difficulty are less likely to be produced by any given child than items with lower difficulty.
+Items with greater discrimination are better able to distinguish children above vs. below the items' difficulty levels. 
+As such, 2PL models are able to capture variation in both the child-level and item-level dimensions, providing a useful framework for modelling children's word production abilities.
+We initially intended to present goodness-of-fit statistics ($M_2$) to ensure that the model fits were appropriate; however, this proved to be computationally intractable due to the large size of the datasets.
+Nonetheless, all models converged within a tolerance of 0.0001 in $\leq 1600$ iterations, suggesting that optimal solutions were found by models for all languages.
+
+## Cross-validation
+
+The central aim of this project was to establish whether items with lower variance in difficulty would have difficulty parameters that generalised well to held-out languages.
+To determine the validity of this hypothesis, we conducted cross-validation by holding out one language at a time as the validation language.
+We then subset the set of all unilemmas for each value of $k \in [2, 26]$, where $k$ refers to the minimum number of languages for which a given unilemma appears in the CDI.
+For each $k$, we then calculated the variability in difficulty for each unilemma across the remaining languages, constructing "Swadesh" lists of lowest variability unilemmas of size $N \in \{20, 50, 100\}$.
+We then measured the correlations between the mean difficulties of these unilemmas and the difficulties of the corresponding items in the held-out validation language, ignoring unilemmas that do not appear on the CDI of the held-out language.
+We also measured the correlations for randomly selected unilemma lists of the same size for each $k$, with 100 samples for each $k$ to minimise the effect of outlier draws.[^01]
+We repeated this process for all 27 languages.
+Correlation values were then Fisher transformed to improve significance testing reliability [@fisherFrequencyDistributionValues1915].
+We then fit a linear mixed-effects model with correlation as the outcome variable, $k$ and the interaction between $k$ and sublist type (Swadesh or random) as predictors, and random intercepts for language.
+
+[^01]: Note that for $k = 26$, there were exactly 89 eligible unilemmas (unilemmas which appeared on all 26 of the training languages as well as the held-out language---i.e., unilemmas which appeared on all 27 languages); as such, for $N=100$, the sublists were not fully filled, and the Swadesh sublist was identical to the random sublists.
+
+## Exploratory analysis
+Given that the correlations were measured by ignoring non-overlapping unilemmas, we noted that the results may have been affected by the number of such non-overlapping unilemmas in the different lists. 
+As such, we also measured the size of the overlap set (i.e., unilemmas in a sublist which also appeared in the held-out language CDI) for each combination of $k$, $N$, sublist type, and held-out language.
+To examine the variance in overlap size, we fit a linear mixed-effects model with overlap size as the outcome variable, $k$ and the interaction between $k$ and sublist type as predictors, and random intercepts for language.
+To determine whether overlap size affected the resultant correlations, we also fit a linear mixed-effects model with correlation as the outcome variable, $k$, $k$-by-sublist, $k$-by-overlap, and $k$-by-sublist-by-overlap as predictors, and random intercepts for language.
+
+# Results
+
+```{r xldf, eval=F}
+xldf <- list()
+for (language in languages) {
+  lang_data <- readRDS(glue("data/all_forms/{language}_data.rds"))
+  fitted <- readRDS(glue("data/prod_models/{language}_2PL_allforms_prod_fits.rds"))
+  df <- fitted$coefs |> 
+    rename("uid" = "definition") |> 
+    left_join(lang_data$items |> 
+                select(uid, category, definition, gloss, uni_lemma),
+              by = "uid") |> 
+    mutate(language = language)
+  xldf <- c(xldf, list(df))
+}
+xldf <- bind_rows(xldf)
+saveRDS(xldf, "data/xldf_prod_allforms.rds")
+```
+
+```{r xldf-retrieve}
+xldf <- readRDS("data/xldf_prod_allforms.rds")
+xldf_clean <- xldf |> 
+  filter(!is.na(uni_lemma), !is.na(d)) |> 
+  mutate(category = case_when(
+    category == "descriptive_words (adjectives)" ~ "descriptive_words",
+    category == "outside_places" ~ "outside",
+    .default = category))
+
+prod_pars <- xldf_clean |> 
+  arrange(language, uni_lemma, desc(a1)) |> # get most discriminating uni_lemma per lang
+  select(uni_lemma, language, uid, category, language, d) |>
+  group_by(uni_lemma, language) |>
+  slice(1)
+```
+
+```{r desc-meand, fig.cap="Mean difficulty by number of languages for each unilemma."}
+prod_sum <- prod_pars |> 
+  filter(language %in% train_langs) |> 
+  group_by(uni_lemma) |> 
+  summarise(num_langs = n(),
+            mean_d = mean(d),
+            sd_d = sd(d))
+
+prod_sum_plot1 <- ggplot(prod_sum, aes(x = num_langs, y = mean_d)) +
+  geom_point(col = "steelblue", alpha = .3,
+             position = position_jitter(width = .3)) +
+  geom_smooth(col = "purple") +
+  labs(x = "Number of languages",
+       y = "Mean difficulty") +
+  coord_cartesian(xlim = c(1, 27),
+                  ylim = c(-8.5, 4.5))
+
+prod_sum_plot2 <- ggplot(prod_sum, aes(x = num_langs)) +
+  geom_density(fill = "steelblue", alpha = .5) +
+  coord_cartesian(xlim = c(1, 27)) +
+  theme_void()
+
+prod_sum_plot3 <- ggplot(prod_sum, aes(x = mean_d)) +
+  geom_density(fill = "steelblue", alpha = .5) +
+  theme_void() +
+  coord_cartesian(xlim = c(-8.5, 4.5)) +
+  coord_flip()
+
+prod_sum_plot2 + plot_spacer() + prod_sum_plot1 + prod_sum_plot3 + 
+  plot_layout(ncol = 2, nrow = 2, widths = c(4, 1), heights = c(1, 4))
+```
+
+```{r desc-sdd, fig.cap="Standard deviation of difficulty by number of languages for each unilemma."}
+prod_sum_plot4 <- ggplot(prod_sum, aes(x = num_langs, y = sd_d)) +
+  geom_point(col = "steelblue", alpha = .3,
+             position = position_jitter(width = .3)) +
+  geom_smooth(col = "purple") +
+  labs(x = "Number of languages",
+       y = "Standard deviation of difficulty") +
+  coord_cartesian(xlim = c(1, 27),
+                  ylim = c(0, 4.5))
+
+prod_sum_plot5 <- ggplot(prod_sum, aes(x = sd_d)) +
+  geom_density(fill = "steelblue", alpha = .5) +
+  theme_void() +
+  coord_cartesian(xlim = c(0, 4.5)) +
+  coord_flip()
+
+prod_sum_plot4 + prod_sum_plot5 + 
+  plot_layout(ncol = 2, nrow = 1, widths = c(4, 1))
+```
+
+Figure \@ref(fig:desc-meand) displays the mean difficulty of each unilemma by the number of languages' forms on which the unilemma appears.
+The marginal densities demonstrate that item difficulties appear to be broadly normally distributed, whereas the number of languages appears to be bimodal with a large peak around 2 and a small peak around 26.
+Generally, the mean difficulty appears to be roughly constant across number of languages, although there is a slight dip for items that are on very few languages' forms, and a slight rise for items that are on most languages' forms.
+
+Figure \@ref(fig:desc-sdd) displays the standard deviation of difficulty of each unilemma by the number of languages' forms on which the unilemma appears.
+The marginal density suggests that standard deviation appears to have a long right tail, although most of the density appears to be centred around 1.5, with little relationship to number of languages.
+Together, the distributions of the key item variables suggest sufficient spread for sublists to differ in their composition and performance.
+
+## Confirmatory analysis
+
+```{r cv}
+run_comparisons <- function(prod_pars, list_size = 100, rand_comparisons = 100) {
+  cv_res <- list()
+  
+  for (lang in train_langs) {
+    # message(glue("Calculating for {lang}..."))
+    
+    # Swadesh: list_size smallest SDs
+    prod_sum <- prod_pars |> 
+      filter(language %in% train_langs,
+             language != lang) |> 
+      group_by(uni_lemma) |> 
+      summarise(num_langs = n(),
+                mean_d = mean(d, na.rm=T),
+                sd_d = sd(d, na.rm=T))
+    prod_test <- prod_pars |> 
+      filter(language == lang)
+    prod_cors <- sapply(2:(length(train_langs)-1), \(k) {
+      prod_subset <- prod_sum |> 
+        filter(num_langs >= k) |> 
+        arrange(sd_d) |> 
+        slice(1:list_size)
+      prod_res <- prod_subset |> 
+        left_join(prod_test, by = "uni_lemma")
+      c((!is.na(prod_res$d)) |> sum(),
+        tryCatch(cor(prod_res$mean_d, prod_res$d, use = "complete.obs"),
+                 error = \(err) NA))
+    }) |> t() |> 
+      `colnames<-`(c("num_overlap", "cor")) |> 
+      as_tibble() |> 
+      mutate(run = NA,
+             k = 2:(length(train_langs)-1),
+             language = lang,
+             sublist = "Swadesh")
+    
+    # random
+    rand_cors <- lapply(2:(length(train_langs)-1), \(k) {
+      rand_subk <- prod_sum |> 
+        filter(num_langs >= k)
+      rand_cors <- sapply(1:rand_comparisons, \(comp) {
+        rand_idx <- sample(1:nrow(rand_subk), min(list_size, nrow(rand_subk)))
+        rand_res <- rand_subk |> 
+          slice(rand_idx) |> 
+          left_join(prod_test, by = "uni_lemma")
+        c((!is.na(rand_res$d)) |> sum(),
+          tryCatch(cor(rand_res$mean_d, rand_res$d, use = "complete.obs"),
+                   error = \(err) NA))
+      }) |> t() |> 
+        `colnames<-`(c("num_overlap", "cor")) |> 
+        as_tibble() |> 
+        mutate(run = 1:rand_comparisons,
+               k = k)
+    }) |> 
+      bind_rows() |> 
+      mutate(language = lang,
+             sublist = "Random")
+    
+    cv_res <- c(cv_res, list(bind_rows(prod_cors, rand_cors)))
+  }
+  bind_rows(cv_res)
+}
+
+cv_res <- run_comparisons(prod_pars, list_size = 100, rand_comparisons = 100)
+
+cv_res_sum <- cv_res |> 
+  group_by(k, language, sublist) |> 
+  summarise(num_overlap = mean(num_overlap),
+            cor = mean(cor)) |> 
+  mutate(cor_f = atanh(cor))
+```
+
+```{r cor-plot, fig.cap="Correlations with item difficulties on held-out language for Swadesh and random sublists, across all $k$, with $N$=100."}
+ggplot(cv_res_sum,
+       aes(x = k, y = cor, col = sublist)) +
+  geom_jitter(aes(col = sublist),
+              alpha = .1) +
+  geom_boxplot(aes(group = interaction(k, sublist))) +
+  labs(x = "k",
+       y = "Correlation",
+       col = "Sublist") +
+  theme(legend.position = "bottom")
+```
+
+```{r cor-lm}
+cv_res_sum_lmer <- cv_res_sum |> 
+  mutate(k = as_factor(k),
+         k = k |> fct_shift(-1))
+m_cv <- lmer(cor_f ~ k + sublist : k + (1 | language),
+             data = cv_res_sum_lmer |> filter(is.finite(cor_f)))
+m_cv_tidy <- m_cv |> tidy()
+```
+
+The results for $N \in \{20, 50, 100\}$ were broadly similar, discounting low values of $k$ ($k < 5$) which demonstrated slightly greater variability for smaller $N$. 
+For brevity, we describe only the results for $N=100$.
+
+Figure \@ref(fig:cor-plot) shows the values for correlations with held-out languages across all $k$ for $N=100$. 
+Numerically, the Swadesh sublists have higher correlations than random for all $k$ except 2 and 26. 
+This was verified by the linear mixed-effects model, which suggested that correlations were significantly higher for the Swadesh sublists than random sublists for $k \in [3, 25]$, all $p < .006$. 
+For $k=2$, despite having a lower median, the Swadesh sublist had significantly higher correlations than random, $p = .020$.
+For $k=26$, the random sublist did not have significantly different correlations than Swadesh, $p > .999$; this is unsurprising as the lists are exactly the same due to the limited number of eligible unilemmas.
+
+## Exploratory analysis
+
+```{r overlap-plot, fig.cap="Overlap sizes for Swadesh and random sublists, across all $k$, with $N$=100."}
+ggplot(cv_res_sum,
+       aes(x = k, y = num_overlap, col = sublist)) +
+  geom_jitter(aes(col = sublist),
+              alpha = .1) +
+  geom_boxplot(aes(group = interaction(k, sublist))) +
+  labs(x = "k",
+       y = "Overlap size",
+       col = "Sublist") +
+  theme(legend.position = "bottom")
+```
+
+```{r overlap-lm}
+m_cvo <- lmer(num_overlap ~ k + sublist : k + (1 | language),
+              data = cv_res_sum_lmer)
+m_cvo_tidy <- m_cvo |> tidy()
+```
+
+Figure \@ref(fig:overlap-plot) shows the overlap sizes across all $k$ for $N=100$. 
+Both the Swadesh and random sublists demonstrated increasing overlap as $k$ increases, suggesting that items which appeared on more training languages' forms were also more likely to appear in the held-out language. 
+The random sublist appeared to have greater overlap size for $k \leq 10$, but this difference appeared to be obviated for larger values of $k$ (all $| \beta | < 0.3$).
+
+```{r corovr-lm}
+m_cv_corovr <- lmer(cor_f ~ (k + sublist : k) * num_overlap + (1 | language),
+                    data = cv_res_sum_lmer |> filter(is.finite(cor_f)))
+m_cv_corovr_tidy <- m_cv_corovr |> tidy()
+m_cv_anova <- anova(m_cv, m_cv_corovr)
+```
+
+Furthermore, the addition of overlap size into a linear mixed-effects model predicting correlation appeared to not improve model fit ($AIC$ (overlap) = $-927.43$, $AIC$ (no overlap) = $-946.54$), and all terms including overlap had little effect on correlation (all $| \beta | < 0.08$).
+These results suggest that overlap size does not affect predictivity of held-out item difficulty, although this finding should be interpreted with caution given that the analysis was exploratory.
+
+# Discussion
+
+In this project, we aimed to determine whether unilemmas that have low variability in difficulty were also likely to have their difficulty estimates generalise well to held-out languages.
+As such, we conducted cross-validation on such low-variability Swadesh sublists, comparing them against random sublists, finding that they indeed exhibited better correlations to held-out languages.
+Furthermore, in our exploratory analyses, we found that random sublists tended to have more overlapping unilemmas than same-sized Swadesh sublists when $k$---the threshold number of languages on which unilemmas appeared---was low, but this difference was obviated at higher $k$, and did not explain variance in correlations.
+
+These results suggest that the approach taken by @kachergisMeasuringChildrenEarlysubmitted seems to hold water---by choosing unilemmas that were low in difficulty variability, the Swadesh sublists were likely to perform well on new languages out of the box (i.e., by directly using their translation equivalents). 
+Indeed, this was true even when expanding to include all CDI forms, not just Words & Sentences.
+This suggests that such sublists can be used as-is to provide quick estimates of children's language abilities by rapid assessment and back-derivation of the child's latent ability using these difficulty estimates.
+Such a capacity would be useful in the case where there is limited access to experts and researchers who are embedded in the target culture, such as in the case of large, multi-site, cross-cultural research, or early anthropological and documentary research.
+
+Perhaps more interestingly, however, they can serve as seed wordlists for the construction of vocabulary checklists in new languages.
+Researchers hoping to investigate language development in a new context can use Swadesh sublists as a starting point, upon which items with more varied semantic categories or items that are particular to the context can be added. 
+The Swadesh items can also then serve as a form of internal validation for the newly generated form.
+This approach would reduce the time, effort, and manpower cost in developing a form for a new language, while providing sufficient scaffolding to ensure a high quality adaptation.
+We hope that this foundation can serve as a jumpstart to broader research in child language development, especially in underdocumented and underresearched populations, in order for us to better understand the generalisability and universality of the processes and trajectories of language acquisition in young children.
+
+# References
+
