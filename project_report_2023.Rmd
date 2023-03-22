@@ -104,6 +104,8 @@ We hypothesise that this is in fact the case, positing that unilemmas with low d
 
 # Methods
 
+All data and code for this project can be found on [Github](https://github.com/alvinwmtan/swadesh-cv).
+
 ## Data
 
 ```{r data-stitching, eval=F}
